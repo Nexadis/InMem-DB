@@ -1,0 +1,83 @@
+package parser
+
+import (
+	"context"
+	"errors"
+	"inmem-db/internal/domain/command"
+	"log/slog"
+	"strings"
+)
+
+var (
+	ErrUnknownCommand = errors.New("unknown command")
+	ErrArgs           = errors.New("invalid number of args")
+)
+
+const (
+	getArgsCnt = 1
+	delArgsCnt = 1
+	setArgsCnt = 2
+)
+
+type Parser struct{}
+
+func (p Parser) Parse(ctx context.Context, line string) (command.Command, error) {
+	const minWordsCnt = 2
+	const maxWordsCnt = 3
+
+	slog.DebugContext(ctx, "parse", slog.String("line", line))
+
+	words := strings.Fields(line)
+
+	if len(words) > maxWordsCnt || len(words) < minWordsCnt {
+		return command.Command{}, ErrUnknownCommand
+	}
+
+	cmd := words[0]
+	args := words[1:]
+
+	switch cmd {
+	case string(command.CommandGET):
+		return parseGET(args)
+	case string(command.CommandDEL):
+		return parseDEL(args)
+	case string(command.CommandSET):
+		return parseSET(args)
+
+	}
+	return command.Command{}, ErrUnknownCommand
+}
+
+func parseGET(args []string) (command.Command, error) {
+	if len(args) != getArgsCnt {
+		return command.Command{}, ErrArgs
+	}
+	return command.Command{
+		Type: command.CommandGET,
+		Name: args[0],
+	}, nil
+}
+
+func parseSET(args []string) (command.Command, error) {
+	if len(args) != setArgsCnt {
+		return command.Command{}, ErrArgs
+	}
+	return command.Command{
+		Type: command.CommandSET,
+		Name: args[0],
+
+		Set: command.SetArgs{
+			Value: args[1],
+		},
+	}, nil
+}
+
+func parseDEL(args []string) (command.Command, error) {
+	if len(args) != delArgsCnt {
+		return command.Command{}, ErrArgs
+	}
+	return command.Command{
+		Type: command.CommandDEL,
+		Name: args[0],
+	}, nil
+}
