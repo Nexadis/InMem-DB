@@ -1,43 +1,87 @@
 package config
 
 import (
-	"log"
 	"os"
+	"path"
+	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/spf13/viper"
 )
 
 const configENV = "CONFIG_FILE"
 
-type EnvType string
-
-const (
-	EnvDev  EnvType = "dev"
-	EnvProd EnvType = "prod"
-)
-
-type Config struct {
-	Env EnvType `yaml:"env,omitempty"`
+type Server struct {
+	Engine  Engine  `mapstructure:"engine"`
+	Network Network `mapstructure:"network"`
+	Logging Logging `mapstructure:"logging"`
 }
 
-func MustLoad() Config {
-	cfg := Config{
-		Env: EnvProd,
+type EngineType string
+
+const (
+	EngineTypeMem = "in_memory"
+)
+
+type Engine struct {
+	Type EngineType `mapstructure:"type"`
+}
+
+type Network struct {
+	Address     string        `mapstructure:"address"`
+	MaxMsgSize  string        `mapstructure:"max_message_size"`
+	IdleTimeout time.Duration `mapstructure:"idle_timeout"`
+
+	MaxConnections int `mapstructure:"max_connections"`
+}
+
+type Logging struct {
+	Level  LogLevel `mapstructure:"level"`
+	Output string   `mapstructure:"output"`
+}
+type LogLevel string
+
+const (
+	LevelDebug LogLevel = "debug"
+	LevelInfo  LogLevel = "info"
+	LevelError LogLevel = "error"
+)
+
+var defaultCfg = Server{
+	Engine: Engine{Type: EngineTypeMem},
+	Network: Network{
+		Address:        "localhost:3223",
+		MaxConnections: 100,
+		MaxMsgSize:     "4KB",
+		IdleTimeout:    5 * time.Minute,
+	},
+	Logging: Logging{
+		Level:  LevelDebug,
+		Output: "output.log",
+	},
+}
+
+func MustLoad() Server {
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+	confPath, ok := os.LookupEnv(configENV)
+	if ok {
+		name := path.Base(confPath)
+		dir := path.Dir(confPath)
+		viper.AddConfigPath(dir)
+		viper.SetConfigName(name)
 	}
 
-	path, ok := os.LookupEnv(configENV)
-	if !ok {
-		log.Fatalf("env %s is not set", configENV)
-	}
-	content, err := os.ReadFile(path)
+	viper.AddConfigPath("configs")
+
+	err := viper.ReadInConfig()
 	if err != nil {
-		log.Fatal(err)
+		return defaultCfg
 	}
 
-	err = yaml.Unmarshal(content, &cfg)
+	cfg := Server{}
+	err = viper.Unmarshal(&cfg)
 	if err != nil {
-		log.Fatal(err)
+		return defaultCfg
 	}
-
 	return cfg
 }

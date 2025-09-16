@@ -4,9 +4,10 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"inmem-db/internal/domain/command"
 	"io"
 	"log/slog"
+
+	"inmem-db/internal/domain/command"
 )
 
 const prompt = "-> "
@@ -26,11 +27,19 @@ type Cli struct {
 	storage Storage
 }
 
-func New(r io.Reader, w io.Writer, p Parser, storage Storage) Cli {
+type Factory func(r io.Reader, w io.Writer) *Cli
+
+func NewFactory(p Parser, storage Storage) Factory {
+	return func(r io.Reader, w io.Writer) *Cli {
+		return New(r, w, p, storage)
+	}
+}
+
+func New(r io.Reader, w io.Writer, p Parser, storage Storage) *Cli {
 	s := bufio.NewScanner(r)
 	s.Split(bufio.ScanLines)
 
-	return Cli{
+	return &Cli{
 		s:       s,
 		w:       w,
 		p:       p,
