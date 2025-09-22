@@ -40,6 +40,14 @@ type Logging struct {
 }
 type LogLevel string
 
+type WAL struct {
+	BatchSize    uint          `mapstructure:"flushing_batch_size"`
+	BatchTimeout time.Duration `mapstructure:"flushing_batch_timeout"`
+
+	MaxSegmentSize string `mapstructure:"max_segment_size"`
+	DataDir        string `mapstructure:"data_directory"`
+}
+
 const (
 	LevelDebug LogLevel = "debug"
 	LevelInfo  LogLevel = "info"
