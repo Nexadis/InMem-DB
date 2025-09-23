@@ -15,12 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestConcurrentResult(t *testing.T) {
+func TestWAL_WithManyWorkers(t *testing.T) {
 	t.Parallel()
 	e := engine.New()
 
 	cfg := config.WAL{
-		BatchSize:      10,
+		BatchSize:      100,
 		BatchTimeout:   time.Millisecond * 100,
 		MaxSegmentSize: "10MB",
 		DataDir:        t.TempDir(),
@@ -33,7 +33,7 @@ func TestConcurrentResult(t *testing.T) {
 	defer cancel()
 	go w.Start(ctx)
 
-	const workers = 100
+	const workers = 5000
 
 	wg := sync.WaitGroup{}
 	wg.Add(workers)

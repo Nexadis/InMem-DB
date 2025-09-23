@@ -51,13 +51,13 @@ func New(cfg config.Server) (App, error) {
 
 func (a *App) Start(ctx context.Context) error {
 	grp, ctx := errgroup.WithContext(ctx)
-	grp.Go(func() error {
-		if a.wal == nil {
+	if a.wal != nil {
+		grp.Go(func() error {
+			a.wal.Start(ctx)
 			return nil
-		}
-		a.wal.Start(ctx)
-		return nil
-	})
+		})
+	}
+
 	grp.Go(func() error {
 		return a.server.Start(ctx)
 	})

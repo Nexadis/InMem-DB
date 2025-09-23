@@ -27,17 +27,16 @@ type WAL struct {
 	cfg config.WAL
 	e   Engine
 
-	mu sync.Mutex
+	mu  sync.Mutex
+	cnt uint32
 
-	jobs chan job
+	workers *semaphore
 
-	cnt     uint32
+	jobs    chan job
 	results []doRes
 
-	resultGot    chan struct{}
-	resultsReady chan struct{}
-
-	tokens chan struct{}
+	resultGot   chan struct{}
+	resultReady chan struct{}
 
 	store *fstore.FStore
 }
@@ -53,18 +52,16 @@ func New(cfg config.WAL, e Engine) (*WAL, error) {
 	}
 
 	w := WAL{
-		cfg:          cfg,
-		e:            e,
-		store:        store,
-		jobs:         make(chan job),
-		results:      make([]doRes, cfg.BatchSize),
-		resultGot:    make(chan struct{}),
-		resultsReady: make(chan struct{}),
-		tokens:       make(chan struct{}, cfg.BatchSize),
-	}
+		cfg:   cfg,
+		e:     e,
+		store: store,
 
-	for range cfg.BatchSize {
-		w.tokens <- struct{}{}
+		jobs:    make(chan job),
+		results: make([]doRes, cfg.BatchSize),
+
+		resultGot:   make(chan struct{}),
+		resultReady: make(chan struct{}),
+		workers:     newSema(int(cfg.BatchSize)),
 	}
 
 	err = w.restore()
@@ -75,11 +72,10 @@ func New(cfg config.WAL, e Engine) (*WAL, error) {
 	return &w, nil
 }
 
+// Do оборачивает engine для записи в engine и на диск
 func (w *WAL) Do(ctx context.Context, cmd command.Command) (string, error) {
-	defer func() {
-		w.tokens <- struct{}{}
-	}()
-	<-w.tokens
+	defer w.workers.Release()
+	w.workers.Acquire()
 
 	w.mu.Lock()
 	id := w.cnt
@@ -95,7 +91,7 @@ func (w *WAL) Do(ctx context.Context, cmd command.Command) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", nil
-	case <-w.resultsReady:
+	case <-w.resultReady:
 	}
 
 	res := w.results[id]
@@ -105,6 +101,7 @@ func (w *WAL) Do(ctx context.Context, cmd command.Command) (string, error) {
 	return res.res, res.err
 }
 
+// Start в цикле обрабатывает батчи, блокирующаяся функция
 func (w *WAL) Start(ctx context.Context) {
 	ticker := time.NewTicker(w.cfg.BatchTimeout)
 	defer ticker.Stop()
@@ -117,6 +114,7 @@ loop:
 			w.store.Close()
 			return
 		case job := <-w.jobs:
+
 			batch = append(batch, job)
 			if len(batch) != int(w.cfg.BatchSize) {
 				continue loop
@@ -158,24 +156,8 @@ func (w *WAL) batchDo(ctx context.Context, batch []job) {
 	}
 	wg.Wait()
 
-	for range len(batch) {
-		select {
-		case <-ctx.Done():
-			return
-		case w.resultsReady <- struct{}{}:
-		}
-	}
-
-	var got int
-
-	for got != len(batch) {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.resultGot:
-		}
-		got++
-	}
+	fill(ctx.Done(), w.resultReady, len(batch))
+	wait(ctx.Done(), w.resultGot, len(batch))
 }
 
 func (w *WAL) restore() error {
