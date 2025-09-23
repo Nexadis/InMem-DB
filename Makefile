@@ -6,7 +6,7 @@ build:
 	go build -o ${BINDIR}/client ./cmd/client/main.go
 
 test:
-	go test -v -count=1 -cover ./...
+	go test -race -v -count=1 -cover ./...
 
 run-server:
 	CONFIG_FILE="configs/local.yaml" go run ./cmd/server/main.go

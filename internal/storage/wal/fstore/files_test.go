@@ -1,7 +1,6 @@
 package fstore
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 
@@ -13,8 +12,6 @@ import (
 )
 
 func TestFiles(t *testing.T) {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
-	defer slog.SetLogLoggerLevel(slog.LevelInfo)
 	t.Parallel()
 
 	cfg := config.WAL{
@@ -54,5 +51,5 @@ func TestFiles(t *testing.T) {
 	loadedCmds, err := s.LoadFiles()
 	require.NoError(t, err)
 
-	assert.ElementsMatch(t, cmds, loadedCmds)
+	assert.Equal(t, cmds, loadedCmds)
 }

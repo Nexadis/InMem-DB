@@ -88,6 +88,9 @@ func (s *FStore) WriteCommands(batch []command.Command) error {
 
 // LoadFiles загружает все данные из файлов в папке
 func (s *FStore) LoadFiles() ([]command.Command, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, fmt.Errorf("read dir: %w", err)
@@ -97,6 +100,7 @@ func (s *FStore) LoadFiles() ([]command.Command, error) {
 	cnt := uint(0)
 	slog.Debug("find entries", slog.Int("cnt", len(entries)))
 
+	var last string
 	for _, e := range entries {
 		slog.Debug("check file", slog.String("name", e.Name()))
 		ok, err := path.Match(nameTmpl, e.Name())
@@ -106,6 +110,7 @@ func (s *FStore) LoadFiles() ([]command.Command, error) {
 		if !ok {
 			continue
 		}
+		last = path.Join(s.dir, e.Name())
 
 		fileCmds, err := s.loadFile(e.Name())
 		if err != nil {
@@ -115,11 +120,25 @@ func (s *FStore) LoadFiles() ([]command.Command, error) {
 		cmds = append(cmds, fileCmds...)
 	}
 
+	if last != "" {
+		f, err := os.OpenFile(last, os.O_APPEND|os.O_WRONLY, 0o766)
+		if err != nil {
+			return nil, fmt.Errorf("open last: %w", err)
+		}
+		stat, err := f.Stat()
+		if err != nil {
+			return nil, fmt.Errorf("stat last: %w", err)
+		}
+		s.opened = f
+		s.written = uint64(stat.Size())
+	}
+
 	s.filesCnt = cnt
 
 	return cmds, nil
 }
 
+// loadFile следует вызывать внутри критической секции с mu.Lock()
 func (s *FStore) loadFile(name string) ([]command.Command, error) {
 	slog.Debug("load file", slog.String("name", name))
 

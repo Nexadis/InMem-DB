@@ -12,10 +12,14 @@ import (
 	"inmem-db/internal/server/cli"
 	"inmem-db/internal/server/tcp"
 	"inmem-db/internal/storage/engine"
+	"inmem-db/internal/storage/wal"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type App struct {
 	server *tcp.Server
+	wal    *wal.WAL
 }
 
 func New(cfg config.Server) (App, error) {
@@ -23,17 +27,42 @@ func New(cfg config.Server) (App, error) {
 	if err != nil {
 		return App{}, err
 	}
+	a := App{}
 
 	p := parser.Parser{}
 	s := engine.New()
 	factory := cli.NewFactory(p, s)
-	server := tcp.NewServer(cfg.Network, factoryAdapter(factory))
 
-	return App{server: server}, nil
+	if cfg.Wal != nil {
+		w, err := wal.New(*cfg.Wal, s)
+		if err != nil {
+			return App{}, fmt.Errorf("new wal: %w", err)
+		}
+		a.wal = w
+
+		factory = cli.NewFactory(p, w)
+	}
+
+	server := tcp.NewServer(cfg.Network, factoryAdapter(factory))
+	a.server = server
+
+	return a, nil
 }
 
 func (a *App) Start(ctx context.Context) error {
-	return a.server.Start(ctx)
+	grp, ctx := errgroup.WithContext(ctx)
+	grp.Go(func() error {
+		if a.wal == nil {
+			return nil
+		}
+		a.wal.Start(ctx)
+		return nil
+	})
+	grp.Go(func() error {
+		return a.server.Start(ctx)
+	})
+
+	return grp.Wait()
 }
 
 func initLog(logConfig config.Logging) error {

@@ -14,6 +14,7 @@ type Server struct {
 	Engine  Engine  `mapstructure:"engine"`
 	Network Network `mapstructure:"network"`
 	Logging Logging `mapstructure:"logging"`
+	Wal     *WAL    `mapstructure:"wal"`
 }
 
 type EngineType string

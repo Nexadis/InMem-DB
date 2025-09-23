@@ -3,9 +3,10 @@ package parser
 import (
 	"context"
 	"errors"
-	"inmem-db/internal/domain/command"
 	"log/slog"
 	"strings"
+
+	"inmem-db/internal/domain/command"
 )
 
 var (

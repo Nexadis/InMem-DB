@@ -19,7 +19,6 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-
 	err = a.Start(ctx)
 	if err != nil {
 		log.Fatal(err)
