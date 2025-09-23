@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"inmem-db/internal/config"
@@ -28,12 +29,12 @@ type WAL struct {
 	e   Engine
 
 	mu  sync.Mutex
-	cnt uint32
+	cnt atomic.Uint32
 
 	workers *semaphore
 
 	jobs    chan job
-	results []doRes
+	results []chan doRes
 
 	resultGot   chan struct{}
 	resultReady chan struct{}
@@ -57,11 +58,14 @@ func New(cfg config.WAL, e Engine) (*WAL, error) {
 		store: store,
 
 		jobs:    make(chan job),
-		results: make([]doRes, cfg.BatchSize),
+		results: make([]chan doRes, cfg.BatchSize),
 
 		resultGot:   make(chan struct{}),
 		resultReady: make(chan struct{}),
 		workers:     newSema(int(cfg.BatchSize)),
+	}
+	for i := range w.results {
+		w.results[i] = make(chan doRes)
 	}
 
 	err = w.restore()
@@ -77,26 +81,22 @@ func (w *WAL) Do(ctx context.Context, cmd command.Command) (string, error) {
 	defer w.workers.Release()
 	w.workers.Acquire()
 
-	w.mu.Lock()
-	id := w.cnt
-	w.cnt = (w.cnt + 1) % uint32(w.cfg.BatchSize)
-	w.mu.Unlock()
+	id := w.cnt.Add(1) - 1
+	id = id % uint32(w.cfg.BatchSize)
+	j := job{id: id, cmd: cmd}
 
+	var res doRes
 	select {
 	case <-ctx.Done():
 		return "", nil
-	case w.jobs <- job{id: id, cmd: cmd}:
+	case w.jobs <- j:
 	}
 
 	select {
 	case <-ctx.Done():
 		return "", nil
-	case <-w.resultReady:
+	case res = <-w.results[id]:
 	}
-
-	res := w.results[id]
-
-	w.resultGot <- struct{}{}
 
 	return res.res, res.err
 }
@@ -105,59 +105,72 @@ func (w *WAL) Do(ctx context.Context, cmd command.Command) (string, error) {
 func (w *WAL) Start(ctx context.Context) {
 	ticker := time.NewTicker(w.cfg.BatchTimeout)
 	defer ticker.Stop()
+
 	batch := make([]job, 0, w.cfg.BatchSize)
+	commands := make([]command.Command, w.cfg.BatchSize)
+	results := make([]doRes, w.cfg.BatchSize)
 
-loop:
-	for {
-		select {
-		case <-ctx.Done():
-			w.store.Close()
-			return
-		case job := <-w.jobs:
-
-			batch = append(batch, job)
-			if len(batch) != int(w.cfg.BatchSize) {
-				continue loop
+	recvJobs := func() {
+		for {
+			select {
+			case j := <-w.jobs:
+				batch = append(batch, j)
+				if len(batch) == int(w.cfg.BatchSize) {
+					return
+				}
+			case <-ticker.C:
+				return
 			}
-			slog.DebugContext(ctx, "batch full")
-		case <-ticker.C:
+		}
+	}
+
+	copyCommands := func() {
+		for i := range batch {
+			commands[i] = batch[i].cmd
+		}
+	}
+
+	sendResults := func() {
+		for i, j := range batch {
+			w.results[j.id] <- results[i]
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		if ctx.Err() != nil {
+			return
 		}
 
-		w.batchDo(ctx, batch)
-		batch = batch[:0]
+		recvJobs()
+		copyCommands()
+		w.batchDo(ctx, commands, results)
+		sendResults()
 	}
 }
 
-func (w *WAL) batchDo(ctx context.Context, batch []job) {
+func (w *WAL) batchDo(ctx context.Context, batch []command.Command, results []doRes) {
 	if len(batch) == 0 {
 		return
 	}
 
 	slog.DebugContext(ctx, "wal store on disk", slog.Int("batch_size", len(batch)))
-	commands := make([]command.Command, len(batch))
-	for i, j := range batch {
-		commands[i] = j.cmd
-	}
-	storeErr := w.store.WriteCommands(commands)
+	storeErr := w.store.WriteCommands(batch)
 
 	wg := sync.WaitGroup{}
 	wg.Add(len(batch))
-	for _, job := range batch {
+	for i, cmd := range batch {
 		go func() {
 			defer wg.Done()
-			r, err := w.e.Do(ctx, job.cmd)
+			r, err := w.e.Do(ctx, cmd)
 			res := doRes{
 				res: r,
 				err: errors.Join(err, storeErr),
 			}
-
-			w.results[job.id] = res
+			results[i] = res
 		}()
 	}
 	wg.Wait()
-
-	fill(ctx.Done(), w.resultReady, len(batch))
-	wait(ctx.Done(), w.resultGot, len(batch))
 }
 
 func (w *WAL) restore() error {

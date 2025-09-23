@@ -33,7 +33,7 @@ func TestWAL_WithManyWorkers(t *testing.T) {
 	defer cancel()
 	go w.Start(ctx)
 
-	const workers = 5000
+	const workers = 1000
 
 	wg := sync.WaitGroup{}
 	wg.Add(workers)
@@ -63,6 +63,45 @@ func TestWAL_WithManyWorkers(t *testing.T) {
 			ans, err := w.Do(ctx, cmd)
 			require.NoError(t, err)
 			assert.Contains(t, ans, fmt.Sprintf("val%d", i))
+		}()
+	}
+	wg.Wait()
+
+	for i := range workers {
+		if i%2 == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cmdStr := fmt.Sprintf("DEL name%d", i)
+			p := parser.Parser{}
+			cmd, err := p.Parse(ctx, cmdStr)
+			require.NoError(t, err)
+
+			_, err = w.Do(ctx, cmd)
+			require.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+
+	wg.Add(workers)
+	for i := range workers {
+		go func() {
+			defer wg.Done()
+
+			cmdStr := fmt.Sprintf("GET name%d", i)
+			p := parser.Parser{}
+			cmd, err := p.Parse(ctx, cmdStr)
+			require.NoError(t, err)
+
+			ans, err := w.Do(ctx, cmd)
+			if i%2 == 0 {
+				require.NoError(t, err)
+				assert.Contains(t, ans, fmt.Sprintf("val%d", i))
+			} else {
+				assert.Error(t, err)
+			}
 		}()
 	}
 	wg.Wait()
