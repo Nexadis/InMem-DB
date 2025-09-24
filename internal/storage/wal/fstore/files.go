@@ -2,16 +2,13 @@ package fstore
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path"
 	"sync"
 
 	"inmem-db/internal/config"
-	"inmem-db/internal/domain/command"
 )
 
 const nameTmpl = "wal_[0-9]*.bin"
@@ -21,10 +18,9 @@ type FStore struct {
 	opened   *os.File
 	filesCnt uint
 
-	dir          string
-	maxFileSize  uint64
-	maxBatchSize uint64
-	written      uint64
+	dir         string
+	maxFileSize uint64
+	written     uint64
 }
 
 func New(cfg config.WAL) (*FStore, error) {
@@ -34,9 +30,8 @@ func New(cfg config.WAL) (*FStore, error) {
 	}
 
 	s := FStore{
-		dir:          cfg.DataDir,
-		maxFileSize:  maxSize,
-		maxBatchSize: uint64(cfg.BatchSize),
+		dir:         cfg.DataDir,
+		maxFileSize: maxSize,
 	}
 
 	return &s, nil
@@ -49,19 +44,9 @@ func (s *FStore) Close() error {
 	return s.opened.Close()
 }
 
-// WriteCommands - записывает batch в открытый файл, используйте LoadFiles перед первым вызовом WriteCommands.
-// Вы можете стереть существующие файлы, если не вызовете LoadFiles.
-func (s *FStore) WriteCommands(batch []command.Command) error {
-	defer s.opened.Sync()
-
-	buf := &bytes.Buffer{}
-	for _, cmd := range batch {
-		err := encodeCmd(buf, cmd)
-		if err != nil {
-			return fmt.Errorf("encode cmd: %w", err)
-		}
-	}
-
+// Write - записывает данные в открытый файл, используйте ReadAll перед первым вызовом Write.
+// Вы можете стереть существующие файлы, если не вызовете ReadAll.
+func (s *FStore) Write(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.opened == nil {
@@ -71,9 +56,11 @@ func (s *FStore) WriteCommands(batch []command.Command) error {
 		}
 	}
 
-	written, err := s.opened.Write(buf.Bytes())
+	defer s.opened.Sync()
+
+	written, err := s.opened.Write(data)
 	if err != nil {
-		return fmt.Errorf("write '%v' : %w", buf.Bytes(), err)
+		return fmt.Errorf("write '%v' : %w", data, err)
 	}
 	s.written += uint64(written)
 
@@ -86,80 +73,28 @@ func (s *FStore) WriteCommands(batch []command.Command) error {
 	return nil
 }
 
-// LoadFiles загружает все данные из файлов в папке
-func (s *FStore) LoadFiles() ([]command.Command, error) {
+// ReadAll загружает все данные из файлов в папке
+func (s *FStore) ReadAll() ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries, err := os.ReadDir(s.dir)
+	files, err := filesInDir(s.dir)
 	if err != nil {
-		return nil, fmt.Errorf("read dir: %w", err)
-	}
-	cmds := make([]command.Command, 0, int(s.maxBatchSize)*len(entries))
-
-	cnt := uint(0)
-	slog.Debug("find entries", slog.Int("cnt", len(entries)))
-
-	var last string
-	for _, e := range entries {
-		slog.Debug("check file", slog.String("name", e.Name()))
-		ok, err := path.Match(nameTmpl, e.Name())
-		if err != nil {
-			return nil, fmt.Errorf("match file: %w", err)
-		}
-		if !ok {
-			continue
-		}
-		last = path.Join(s.dir, e.Name())
-
-		fileCmds, err := s.loadFile(e.Name())
-		if err != nil {
-			return nil, err
-		}
-		cnt++
-		cmds = append(cmds, fileCmds...)
+		return nil, fmt.Errorf("all files: %w", err)
 	}
 
-	if last != "" {
-		f, err := os.OpenFile(last, os.O_APPEND|os.O_WRONLY, 0o766)
-		if err != nil {
-			return nil, fmt.Errorf("open last: %w", err)
-		}
-		stat, err := f.Stat()
-		if err != nil {
-			return nil, fmt.Errorf("stat last: %w", err)
-		}
-		s.opened = f
-		s.written = uint64(stat.Size())
-	}
-
-	s.filesCnt = cnt
-
-	return cmds, nil
+	return s.readFiles(files)
 }
 
 // loadFile следует вызывать внутри критической секции с mu.Lock()
-func (s *FStore) loadFile(name string) ([]command.Command, error) {
+func (s *FStore) loadFile(name string) ([]byte, error) {
 	slog.Debug("load file", slog.String("name", name))
 
-	name = path.Join(s.dir, name)
 	data, err := os.ReadFile(name)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
 	}
-	buf := bytes.NewBuffer(data)
-
-	cmds := make([]command.Command, 0, s.maxBatchSize)
-	for {
-		cmd, err := decodeCmd(buf)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return cmds, nil
-			}
-			return nil, fmt.Errorf("decode cmd: %w", err)
-		}
-		cmds = append(cmds, cmd)
-	}
+	return data, nil
 }
 
 // newFile следует вызывать внутри критической секции с mu.Lock()
@@ -175,4 +110,76 @@ func (s *FStore) newFile() error {
 	s.written = 0
 	s.opened = f
 	return nil
+}
+
+func (s *FStore) readFiles(names []string) ([]byte, error) {
+	cnt := uint(0)
+	slog.Debug("find entries", slog.Int("cnt", len(names)))
+
+	sumData := &bytes.Buffer{}
+
+	var last string
+	for _, name := range names {
+		if skipFile(name) {
+			continue
+		}
+		name = path.Join(s.dir, name)
+
+		data, err := s.loadFile(name)
+		if err != nil {
+			return nil, err
+		}
+		cnt++
+		sumData.Write(data)
+	}
+
+	if last != "" {
+		err := s.openLast(last)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	s.filesCnt = cnt
+	return sumData.Bytes(), nil
+}
+
+func (s *FStore) openLast(name string) error {
+	f, err := os.OpenFile(name, os.O_APPEND|os.O_WRONLY, 0o766)
+	if err != nil {
+		return fmt.Errorf("open last: %w", err)
+	}
+	stat, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat last: %w", err)
+	}
+
+	s.opened = f
+	s.written = uint64(stat.Size())
+
+	return nil
+}
+
+func filesInDir(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read dir: %w", err)
+	}
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		names[i] = e.Name()
+	}
+	return names, nil
+}
+
+func skipFile(name string) bool {
+	ok, err := path.Match(nameTmpl, name)
+	if err != nil || !ok {
+		return true
+	}
+
+	return false
 }
