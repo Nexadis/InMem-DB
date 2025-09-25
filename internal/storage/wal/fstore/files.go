@@ -11,7 +11,10 @@ import (
 	"inmem-db/internal/config"
 )
 
-const nameTmpl = "wal_[0-9]*.bin"
+const (
+	namePattern = "wal_[0-9]*.bin"
+	nameFormat  = "wal_%04d.bin"
+)
 
 type FStore struct {
 	mu       sync.Mutex
@@ -41,18 +44,22 @@ func (s *FStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.opened.Close()
+	if s.opened != nil {
+		return s.opened.Close()
+	}
+	return nil
 }
 
 // Write - записывает данные в открытый файл, используйте ReadAll перед первым вызовом Write.
 // Вы можете стереть существующие файлы, если не вызовете ReadAll.
-func (s *FStore) Write(data []byte) error {
+func (s *FStore) Write(data []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if s.opened == nil {
-		err := s.newFile()
+		err := s.openLastUsed()
 		if err != nil {
-			return fmt.Errorf("new file: %w", err)
+			return 0, fmt.Errorf("open last used file: %w", err)
 		}
 	}
 
@@ -60,17 +67,18 @@ func (s *FStore) Write(data []byte) error {
 
 	written, err := s.opened.Write(data)
 	if err != nil {
-		return fmt.Errorf("write '%v' : %w", data, err)
+		return 0, fmt.Errorf("write '%v' : %w", data, err)
 	}
 	s.written += uint64(written)
 
 	if s.written > s.maxFileSize {
-		err := s.newFile()
+		err := s.openNewFile()
 		if err != nil {
-			return fmt.Errorf("new file: %w", err)
+			return 0, fmt.Errorf("open new file: %w", err)
 		}
 	}
-	return nil
+
+	return written, nil
 }
 
 // ReadAll загружает все данные из файлов в папке
@@ -80,27 +88,20 @@ func (s *FStore) ReadAll() ([]byte, error) {
 
 	files, err := filesInDir(s.dir)
 	if err != nil {
-		return nil, fmt.Errorf("all files: %w", err)
+		return nil, fmt.Errorf("files in dir: %w", err)
 	}
 
-	return s.readFiles(files)
-}
-
-// loadFile следует вызывать внутри критической секции с mu.Lock()
-func (s *FStore) loadFile(name string) ([]byte, error) {
-	slog.Debug("load file", slog.String("name", name))
-
-	data, err := os.ReadFile(name)
+	data, err := s.readFiles(files)
 	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return nil, fmt.Errorf("read files: %w", err)
 	}
+
 	return data, nil
 }
 
-// newFile следует вызывать внутри критической секции с mu.Lock()
-func (s *FStore) newFile() error {
+func (s *FStore) openNewFile() error {
 	s.filesCnt++
-	name := fmt.Sprintf("wal_%04d.bin", s.filesCnt)
+	name := fmt.Sprintf(nameFormat, s.filesCnt)
 	f, err := os.Create(path.Join(s.dir, name))
 	if err != nil {
 		return fmt.Errorf("create: %w", err)
@@ -118,14 +119,10 @@ func (s *FStore) readFiles(names []string) ([]byte, error) {
 
 	sumData := &bytes.Buffer{}
 
-	var last string
 	for _, name := range names {
-		if skipFile(name) {
-			continue
-		}
 		name = path.Join(s.dir, name)
 
-		data, err := s.loadFile(name)
+		data, err := readFile(name)
 		if err != nil {
 			return nil, err
 		}
@@ -133,18 +130,23 @@ func (s *FStore) readFiles(names []string) ([]byte, error) {
 		sumData.Write(data)
 	}
 
-	if last != "" {
-		err := s.openLast(last)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	s.filesCnt = cnt
 	return sumData.Bytes(), nil
 }
 
-func (s *FStore) openLast(name string) error {
+func (s *FStore) openLastUsed() error {
+	files, err := filesInDir(s.dir)
+	if err != nil {
+		return fmt.Errorf("files in dir: %w", err)
+	}
+
+	if len(files) == 0 {
+		return s.openNewFile()
+	}
+
+	last := files[len(files)-1]
+	name := path.Join(s.dir, last)
+
 	f, err := os.OpenFile(name, os.O_APPEND|os.O_WRONLY, 0o766)
 	if err != nil {
 		return fmt.Errorf("open last: %w", err)
@@ -165,21 +167,38 @@ func filesInDir(dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read dir: %w", err)
 	}
+
 	names := make([]string, len(entries))
 	for i, e := range entries {
 		if e.IsDir() {
 			continue
 		}
+
+		if skipFile(e.Name()) {
+			continue
+		}
+
 		names[i] = e.Name()
 	}
+
 	return names, nil
 }
 
 func skipFile(name string) bool {
-	ok, err := path.Match(nameTmpl, name)
+	ok, err := path.Match(namePattern, name)
 	if err != nil || !ok {
 		return true
 	}
 
 	return false
+}
+
+func readFile(name string) ([]byte, error) {
+	slog.Debug("read file", slog.String("name", name))
+
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	return data, nil
 }

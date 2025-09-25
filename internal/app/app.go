@@ -11,6 +11,7 @@ import (
 	"inmem-db/internal/config"
 	"inmem-db/internal/server/cli"
 	"inmem-db/internal/server/tcp"
+	"inmem-db/internal/storage"
 	"inmem-db/internal/storage/engine"
 	"inmem-db/internal/storage/wal"
 
@@ -19,7 +20,9 @@ import (
 
 type App struct {
 	server *tcp.Server
-	wal    *wal.WAL
+
+	beforeStart func(ctx context.Context) error
+	cleanup     func()
 }
 
 func New(cfg config.Server) (App, error) {
@@ -27,20 +30,29 @@ func New(cfg config.Server) (App, error) {
 	if err != nil {
 		return App{}, err
 	}
-	a := App{}
 
+	a := App{}
 	p := parser.Parser{}
-	s := engine.New()
-	factory := cli.NewFactory(p, s)
+	e := engine.New()
+
+	factory := cli.NewFactory(p, e)
 
 	if cfg.Wal != nil {
-		w, err := wal.New(*cfg.Wal, s)
+		w, err := wal.New(*cfg.Wal)
 		if err != nil {
 			return App{}, fmt.Errorf("new wal: %w", err)
 		}
-		a.wal = w
 
-		factory = cli.NewFactory(p, w)
+		s := storage.New(e, w)
+		factory = cli.NewFactory(p, s)
+
+		a.beforeStart = func(ctx context.Context) error {
+			return s.Restore(ctx)
+		}
+
+		a.cleanup = func() {
+			w.Close()
+		}
 	}
 
 	server := tcp.NewServer(cfg.Network, factoryAdapter(factory))
@@ -50,14 +62,15 @@ func New(cfg config.Server) (App, error) {
 }
 
 func (a *App) Start(ctx context.Context) error {
-	grp, ctx := errgroup.WithContext(ctx)
-	if a.wal != nil {
-		grp.Go(func() error {
-			a.wal.Start(ctx)
-			return nil
-		})
+	if a.beforeStart != nil {
+		err := a.beforeStart(ctx)
+		if err != nil {
+			return err
+		}
 	}
+	defer a.cleanup()
 
+	grp, ctx := errgroup.WithContext(ctx)
 	grp.Go(func() error {
 		return a.server.Start(ctx)
 	})

@@ -9,7 +9,7 @@ import (
 
 	"inmem-db/internal/compute/parser"
 	"inmem-db/internal/config"
-	"inmem-db/internal/storage/engine"
+	"inmem-db/internal/domain/command"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,8 +17,6 @@ import (
 
 func TestWAL_WithManyWorkers(t *testing.T) {
 	t.Parallel()
-	e := engine.New()
-
 	cfg := config.WAL{
 		BatchSize:      100,
 		BatchTimeout:   time.Millisecond * 100,
@@ -26,14 +24,17 @@ func TestWAL_WithManyWorkers(t *testing.T) {
 		DataDir:        t.TempDir(),
 	}
 
-	w, err := New(cfg, e)
+	w, err := New(cfg)
 	require.NoError(t, err)
+	t.Log("wal created")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
-	go w.Start(ctx)
 
 	const workers = 1000
+
+	mu := sync.Mutex{}
+	wantCommands := make([]command.Command, 0, workers)
 
 	wg := sync.WaitGroup{}
 	wg.Add(workers)
@@ -45,64 +46,23 @@ func TestWAL_WithManyWorkers(t *testing.T) {
 			cmd, err := p.Parse(ctx, cmdStr)
 			require.NoError(t, err)
 
-			_, err = w.Do(ctx, cmd)
+			mu.Lock()
+			wantCommands = append(wantCommands, cmd)
+			mu.Unlock()
+
+			err = w.Save(ctx, cmd)
 			require.NoError(t, err)
 		}()
 	}
+
 	wg.Wait()
+	w.Close()
 
-	wg.Add(workers)
-	for i := range workers {
-		go func() {
-			defer wg.Done()
-			cmdStr := fmt.Sprintf("GET name%d", i)
-			p := parser.Parser{}
-			cmd, err := p.Parse(ctx, cmdStr)
-			require.NoError(t, err)
+	w, err = New(cfg)
+	require.NoError(t, err)
 
-			ans, err := w.Do(ctx, cmd)
-			require.NoError(t, err)
-			assert.Contains(t, ans, fmt.Sprintf("val%d", i))
-		}()
-	}
-	wg.Wait()
+	gotCommands, err := w.Load(ctx)
+	require.NoError(t, err)
 
-	for i := range workers {
-		if i%2 == 0 {
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			cmdStr := fmt.Sprintf("DEL name%d", i)
-			p := parser.Parser{}
-			cmd, err := p.Parse(ctx, cmdStr)
-			require.NoError(t, err)
-
-			_, err = w.Do(ctx, cmd)
-			require.NoError(t, err)
-		}()
-	}
-	wg.Wait()
-
-	wg.Add(workers)
-	for i := range workers {
-		go func() {
-			defer wg.Done()
-
-			cmdStr := fmt.Sprintf("GET name%d", i)
-			p := parser.Parser{}
-			cmd, err := p.Parse(ctx, cmdStr)
-			require.NoError(t, err)
-
-			ans, err := w.Do(ctx, cmd)
-			if i%2 == 0 {
-				require.NoError(t, err)
-				assert.Contains(t, ans, fmt.Sprintf("val%d", i))
-			} else {
-				assert.Error(t, err)
-			}
-		}()
-	}
-	wg.Wait()
+	assert.ElementsMatch(t, wantCommands, gotCommands)
 }

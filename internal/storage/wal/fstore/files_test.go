@@ -28,7 +28,7 @@ func TestFiles(t *testing.T) {
 	_, err = rand.Read(data)
 	require.NoError(t, err)
 
-	err = s.Write(data)
+	_, err = s.Write(data)
 	require.NoError(t, err)
 	err = s.Close()
 	require.NoError(t, err)
