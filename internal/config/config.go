@@ -14,6 +14,7 @@ type Server struct {
 	Engine  Engine  `mapstructure:"engine"`
 	Network Network `mapstructure:"network"`
 	Logging Logging `mapstructure:"logging"`
+	Wal     *WAL    `mapstructure:"wal"`
 }
 
 type EngineType string
@@ -39,6 +40,14 @@ type Logging struct {
 	Output string   `mapstructure:"output"`
 }
 type LogLevel string
+
+type WAL struct {
+	BatchSize    uint          `mapstructure:"flushing_batch_size"`
+	BatchTimeout time.Duration `mapstructure:"flushing_batch_timeout"`
+
+	MaxSegmentSize string `mapstructure:"max_segment_size"`
+	DataDir        string `mapstructure:"data_directory"`
+}
 
 const (
 	LevelDebug LogLevel = "debug"

@@ -11,11 +11,18 @@ import (
 	"inmem-db/internal/config"
 	"inmem-db/internal/server/cli"
 	"inmem-db/internal/server/tcp"
+	"inmem-db/internal/storage"
 	"inmem-db/internal/storage/engine"
+	"inmem-db/internal/storage/wal"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type App struct {
 	server *tcp.Server
+
+	beforeStart func(ctx context.Context) error
+	cleanup     func()
 }
 
 func New(cfg config.Server) (App, error) {
@@ -24,16 +31,51 @@ func New(cfg config.Server) (App, error) {
 		return App{}, err
 	}
 
+	a := App{}
 	p := parser.Parser{}
-	s := engine.New()
-	factory := cli.NewFactory(p, s)
-	server := tcp.NewServer(cfg.Network, factoryAdapter(factory))
+	e := engine.New()
 
-	return App{server: server}, nil
+	factory := cli.NewFactory(p, e)
+
+	if cfg.Wal != nil {
+		w, err := wal.New(*cfg.Wal)
+		if err != nil {
+			return App{}, fmt.Errorf("new wal: %w", err)
+		}
+
+		s := storage.New(e, w)
+		factory = cli.NewFactory(p, s)
+
+		a.beforeStart = func(ctx context.Context) error {
+			return s.Restore(ctx)
+		}
+
+		a.cleanup = func() {
+			w.Close()
+		}
+	}
+
+	server := tcp.NewServer(cfg.Network, factoryAdapter(factory))
+	a.server = server
+
+	return a, nil
 }
 
 func (a *App) Start(ctx context.Context) error {
-	return a.server.Start(ctx)
+	if a.beforeStart != nil {
+		err := a.beforeStart(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	defer a.cleanup()
+
+	grp, ctx := errgroup.WithContext(ctx)
+	grp.Go(func() error {
+		return a.server.Start(ctx)
+	})
+
+	return grp.Wait()
 }
 
 func initLog(logConfig config.Logging) error {
