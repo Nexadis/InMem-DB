@@ -13,6 +13,24 @@ var Byte2CmdType = map[byte]string{
 	CmdType2Byte[string(command.CommandDEL)]: string(command.CommandDEL),
 }
 
+func ReadID(r io.Reader) (int64, error) {
+	id := int64(0)
+	err := binary.Read(r, binary.BigEndian, &id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func ReadSize(r io.Reader) (uint32, error) {
+	size := uint32(0)
+	err := binary.Read(r, binary.BigEndian, &size)
+	if err != nil {
+		return 0, err
+	}
+	return size, nil
+}
+
 func Read(r io.Reader) (command.Command, error) {
 	cmd := command.Command{}
 

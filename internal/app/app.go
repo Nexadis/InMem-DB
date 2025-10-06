@@ -43,7 +43,8 @@ func New(cfg config.Server) (App, error) {
 			return App{}, fmt.Errorf("new wal: %w", err)
 		}
 
-		s := storage.New(e, w)
+		s := newStorage(e, w, cfg.Replication)
+
 		factory = cli.NewFactory(p, s)
 
 		a.beforeStart = func(ctx context.Context) error {
@@ -106,4 +107,18 @@ func factoryAdapter(f cli.Factory) tcp.HandlerFactory {
 	return func(r io.Reader, w io.Writer) tcp.Starter {
 		return f(r, w)
 	}
+}
+
+func newStorage(e *engine.Engine, w *wal.WAL, cfg *config.Replication) *storage.Storage {
+	if cfg != nil {
+		switch cfg.ReplicaType {
+		case "master":
+			return storage.New(e, w, storage.WithMasterServer(cfg.MasterAddress, w))
+		case "slave":
+			slog.Info("storage slave")
+			return storage.New(e, w, storage.WithMasterConnect(*cfg, w, e))
+		}
+	}
+
+	return storage.New(e, w)
 }

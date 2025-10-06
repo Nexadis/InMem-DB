@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"inmem-db/internal/config"
 	"inmem-db/internal/domain/command"
@@ -13,6 +14,10 @@ import (
 
 type WAL struct {
 	cfg config.WAL
+
+	mu       sync.RWMutex
+	segments map[ID]Segment
+	maxID    ID
 
 	store *fstore.FStore
 	batch *concurrent.Batch[command.Command]
@@ -25,8 +30,9 @@ func New(cfg config.WAL) (*WAL, error) {
 	}
 
 	w := WAL{
-		cfg:   cfg,
-		store: store,
+		cfg:      cfg,
+		store:    store,
+		segments: make(map[ID]Segment, 10),
 	}
 	w.batch = concurrent.NewBatch(
 		int(cfg.BatchSize),
@@ -42,7 +48,14 @@ func (w *WAL) Save(ctx context.Context, cmd command.Command) error {
 }
 
 func (w *WAL) writeBatch(batch []command.Command) error {
-	data, err := encodeCommands(batch)
+	if len(batch) == 0 {
+		return nil
+	}
+
+	segment := w.makeSegment(batch)
+	w.addSegment(segment)
+
+	data, err := encodeSegments([]Segment{segment})
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
 	}
@@ -59,13 +72,67 @@ func (w *WAL) Load(ctx context.Context) ([]command.Command, error) {
 		return nil, fmt.Errorf("load files: %w", err)
 	}
 
-	cmds, err := decodeCommands(data)
+	segments, err := decodeSegments(data)
 	if err != nil {
-		return nil, fmt.Errorf("decode commands: %w", err)
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+
+	commands := make([]command.Command, 0, len(segments)*10)
+	for _, segment := range segments {
+		commands = append(commands, segment.commands...)
+		w.addSegment(segment)
 	}
 
 	slog.Debug("wal loaded")
-	return cmds, nil
+	return commands, nil
+}
+
+func (w *WAL) AfterSegments(id int64) ([]byte, error) {
+	slog.Debug("AfterSegments", slog.Int64("id", id))
+
+	segments := make([]Segment, 0, 10)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for sID, segment := range w.segments {
+		if sID > ID(id) {
+			segments = append(segments, segment)
+		}
+	}
+
+	data, err := encodeSegments(segments)
+	if err != nil {
+		return nil, fmt.Errorf("encode segments: %w", err)
+	}
+
+	return data, nil
+}
+
+func (w *WAL) ApplySegments(data []byte) ([]command.Command, error) {
+	segments, err := decodeSegments(data)
+	if err != nil {
+		return nil, fmt.Errorf("decode segments: %w", err)
+	}
+
+	commands := []command.Command{}
+	for _, s := range segments {
+		w.addSegment(s)
+		commands = append(commands, s.commands...)
+	}
+
+	if len(data) > 0 {
+		_, err = w.store.Write(data)
+		if err != nil {
+			return nil, fmt.Errorf("write: %w", err)
+		}
+	}
+
+	return commands, nil
+}
+
+func (w *WAL) LastSegmentID() int64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return int64(w.maxID)
 }
 
 func (w *WAL) Close() {

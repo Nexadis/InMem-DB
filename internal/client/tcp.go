@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 
 	"inmem-db/internal/config"
@@ -30,6 +31,10 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
+	defer func() {
+		slog.InfoContext(ctx, "close connect to server", slog.String("addr", c.cfg.Address))
+	}()
+	slog.InfoContext(ctx, "connect to server", slog.String("addr", c.cfg.Address))
 
 	go func() {
 		_, _ = io.Copy(c.output, conn)
