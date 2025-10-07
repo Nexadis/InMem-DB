@@ -19,7 +19,8 @@ import (
 )
 
 type App struct {
-	server *tcp.Server
+	server  *tcp.Server
+	storage *storage.Storage
 
 	beforeStart func(ctx context.Context) error
 	cleanup     func()
@@ -44,7 +45,6 @@ func New(cfg config.Server) (App, error) {
 		}
 
 		s := newStorage(e, w, cfg.Replication)
-
 		factory = cli.NewFactory(p, s)
 
 		a.beforeStart = func(ctx context.Context) error {
@@ -54,6 +54,8 @@ func New(cfg config.Server) (App, error) {
 		a.cleanup = func() {
 			w.Close()
 		}
+
+		a.storage = s
 	}
 
 	server := tcp.NewServer(cfg.Network, factoryAdapter(factory))
@@ -75,6 +77,11 @@ func (a *App) Start(ctx context.Context) error {
 	grp.Go(func() error {
 		return a.server.Start(ctx)
 	})
+	if a.storage != nil {
+		grp.Go(func() error {
+			return a.storage.Start(ctx)
+		})
+	}
 
 	return grp.Wait()
 }
@@ -112,11 +119,14 @@ func factoryAdapter(f cli.Factory) tcp.HandlerFactory {
 func newStorage(e *engine.Engine, w *wal.WAL, cfg *config.Replication) *storage.Storage {
 	if cfg != nil {
 		switch cfg.ReplicaType {
-		case "master":
-			return storage.New(e, w, storage.WithMasterServer(cfg.MasterAddress, w))
-		case "slave":
-			slog.Info("storage slave")
-			return storage.New(e, w, storage.WithMasterConnect(*cfg, w, e))
+
+		case config.MasterReplica:
+			server := storage.NewMasterServer(cfg.MasterAddress, w)
+			return storage.New(e, w, storage.WithMasterServer(server))
+
+		case config.SlaveReplica:
+			client := storage.NewReplicationClient(*cfg, w, e)
+			return storage.New(e, w, storage.WithReplicationClient(client))
 		}
 	}
 

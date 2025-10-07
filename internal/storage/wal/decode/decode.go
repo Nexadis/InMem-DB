@@ -1,4 +1,4 @@
-package encode
+package decode
 
 import (
 	"encoding/binary"
@@ -6,7 +6,10 @@ import (
 	"io"
 
 	"inmem-db/internal/domain/command"
+	"inmem-db/internal/storage/wal/encode"
 )
+
+var CmdType2Byte = encode.CmdType2Byte
 
 var Byte2CmdType = map[byte]string{
 	CmdType2Byte[string(command.CommandSET)]: string(command.CommandSET),

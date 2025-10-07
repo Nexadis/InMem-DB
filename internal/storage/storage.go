@@ -7,6 +7,8 @@ import (
 
 	"inmem-db/internal/domain/command"
 	"inmem-db/internal/server/tcp"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type Engine interface {
@@ -18,21 +20,13 @@ type WAL interface {
 	Load(ctx context.Context) ([]command.Command, error)
 }
 
-type masterConnect interface {
-	Start(ctx context.Context) error
-}
-
 type Storage struct {
 	e Engine
 	w WAL
 
-	isSlave       bool
-	masterConnect masterConnect
-
-	// server запускается в любом случае,
-	// так можно сделать slave от slave,
-	// это увеличит отставание, но уменьшит нагрузку на master
-	server *tcp.Server
+	isSlave bool
+	client  *replicationClient
+	server  *tcp.Server
 }
 
 func New(e Engine, w WAL, options ...option) *Storage {
@@ -80,20 +74,27 @@ func (s *Storage) Restore(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+func (s *Storage) Start(ctx context.Context) error {
+	grp, ctx := errgroup.WithContext(ctx)
+
 	if s.isSlave {
 		slog.InfoContext(ctx, "storage is slave")
-		go func() {
-			err := s.masterConnect.Start(ctx)
-			if err != nil {
-				slog.ErrorContext(ctx, "start connection to master", slog.String("error", err.Error()))
-			}
+		grp.Go(func() error {
+			err := s.client.Start(ctx)
 			slog.InfoContext(ctx, "close connection to master")
-		}()
+			return err
+		})
 	}
 
 	if s.server != nil {
-		go s.server.Start(ctx)
+		grp.Go(func() error {
+			err := s.server.Start(ctx)
+			slog.InfoContext(ctx, "close master server")
+			return err
+		})
 	}
-
-	return nil
+	return grp.Wait()
 }

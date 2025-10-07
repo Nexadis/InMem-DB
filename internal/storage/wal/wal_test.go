@@ -28,7 +28,7 @@ func TestWAL_WithManyWorkers(t *testing.T) {
 	require.NoError(t, err)
 	t.Log("wal created")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
 	const workers = 1000

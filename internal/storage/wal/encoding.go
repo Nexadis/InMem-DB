@@ -1,45 +1,16 @@
 package wal
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
 
 	"inmem-db/internal/domain/command"
+	"inmem-db/internal/storage/wal/decode"
 	"inmem-db/internal/storage/wal/encode"
 )
 
-func decodeSegments(data []byte) ([]Segment, error) {
-	buf := bytes.NewBuffer(data)
-
-	segments := make([]Segment, 0, 100)
-	for {
-		segment, err := decodeSegment(buf)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return segments, nil
-			}
-			return nil, fmt.Errorf("decode cmd: %w", err)
-		}
-		segments = append(segments, segment)
-	}
-}
-
-func encodeSegments(segments []Segment) ([]byte, error) {
-	buf := &bytes.Buffer{}
-	for _, segment := range segments {
-		err := encodeSegment(buf, segment)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return buf.Bytes(), nil
-}
-
-func encodeSegment(w io.Writer, segment Segment) error {
+func EncodeSegment(w io.Writer, segment Segment) error {
 	segment.mu.RLock()
 	defer segment.mu.RUnlock()
 
@@ -63,13 +34,13 @@ func encodeSegment(w io.Writer, segment Segment) error {
 	return nil
 }
 
-func decodeSegment(r io.Reader) (Segment, error) {
-	id, err := encode.ReadID(r)
+func DecodeSegment(r io.Reader) (Segment, error) {
+	id, err := decode.ReadID(r)
 	if err != nil {
 		return Segment{}, fmt.Errorf("decode segment id: %w", err)
 	}
 
-	size, err := encode.ReadSize(r)
+	size, err := decode.ReadSize(r)
 	if err != nil {
 		return Segment{}, fmt.Errorf("decode segment size: %w", err)
 	}
@@ -80,7 +51,7 @@ func decodeSegment(r io.Reader) (Segment, error) {
 	}
 
 	for i := range size {
-		cmd, err := encode.Read(r)
+		cmd, err := decode.Read(r)
 		if err != nil {
 			return Segment{}, fmt.Errorf("decode command of segment '%d': %w", segment.ID, err)
 		}

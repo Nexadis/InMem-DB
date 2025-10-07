@@ -1,22 +1,19 @@
 package storage
 
-import (
-	"inmem-db/internal/config"
-)
+import "inmem-db/internal/server/tcp"
 
 type option func(*Storage)
 
-func WithMasterConnect(cfg config.Replication, wal segmentManager, e Engine) option {
+func WithReplicationClient(client *replicationClient) option {
 	return func(s *Storage) {
 		s.isSlave = true
-
-		client := newReplicationClient(cfg, wal, e)
-		s.masterConnect = client
+		s.client = client
 	}
 }
 
-func WithMasterServer(addr string, wal SegmentsGetter) option {
+func WithMasterServer(masterServer *tcp.Server) option {
 	return func(s *Storage) {
-		s.server = newMasterServer(addr, wal)
+		s.isSlave = false
+		s.server = masterServer
 	}
 }

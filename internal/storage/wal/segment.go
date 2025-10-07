@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"log/slog"
 	"sync"
 
 	"inmem-db/internal/domain/command"
@@ -15,21 +16,28 @@ type Segment struct {
 	commands []command.Command
 }
 
-func (w *WAL) makeSegment(commands []command.Command) Segment {
+func newSegment(id ID, commands []command.Command) Segment {
 	segmentCommands := make([]command.Command, len(commands))
 	copy(segmentCommands, commands)
 
-	segment := Segment{
+	return Segment{
 		mu:       &sync.RWMutex{},
-		ID:       w.genSegmentID(),
+		ID:       id,
 		commands: segmentCommands,
 	}
-	return segment
+}
+
+func (w *WAL) makeSegment(commands []command.Command) Segment {
+	return newSegment(w.genSegmentID(), commands)
 }
 
 func (w *WAL) addSegment(s Segment) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	w.segments[s.ID] = s
 
 	if s.ID > w.maxID {
@@ -45,4 +53,36 @@ func (w *WAL) genSegmentID() ID {
 	}
 	w.maxID++
 	return w.maxID
+}
+
+func (w *WAL) SegmentsAfter(id int64) []Segment {
+	slog.Debug("SegmentsAfter", slog.Int64("id", id))
+
+	segments := []Segment{}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for sID, segment := range w.segments {
+		if sID > ID(id) {
+			segments = append(segments, segment)
+		}
+	}
+	return segments
+}
+
+func (w *WAL) SegmentCommands(segment Segment) []command.Command {
+	segment.mu.RLock()
+	defer segment.mu.RUnlock()
+	commands := append([]command.Command{}, segment.commands...)
+	return commands
+}
+
+func (w *WAL) SaveSegment(segment Segment) error {
+	w.addSegment(segment)
+	return EncodeSegment(w.store, segment)
+}
+
+func (w *WAL) LastSegmentID() int64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return int64(w.maxID)
 }

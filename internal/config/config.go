@@ -50,10 +50,17 @@ type WAL struct {
 	DataDir        string `mapstructure:"data_directory"`
 }
 
+type replicationType string
+
+const (
+	MasterReplica = "master"
+	SlaveReplica  = "slave"
+)
+
 type Replication struct {
-	ReplicaType   string        `mapstructure:"replica_type"`
-	MasterAddress string        `mapstructure:"master_address"`
-	SyncInterval  time.Duration `mapstructure:"sync_interval"`
+	ReplicaType   replicationType `mapstructure:"replica_type"`
+	MasterAddress string          `mapstructure:"master_address"`
+	SyncInterval  time.Duration   `mapstructure:"sync_interval"`
 }
 
 const (

@@ -1,8 +1,11 @@
 package wal
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 
@@ -53,15 +56,9 @@ func (w *WAL) writeBatch(batch []command.Command) error {
 	}
 
 	segment := w.makeSegment(batch)
-	w.addSegment(segment)
-
-	data, err := encodeSegments([]Segment{segment})
+	err := w.SaveSegment(segment)
 	if err != nil {
-		return fmt.Errorf("encode: %w", err)
-	}
-	_, err = w.store.Write(data)
-	if err != nil {
-		return fmt.Errorf("write: %w", err)
+		return fmt.Errorf("save segment: %w", err)
 	}
 	return nil
 }
@@ -87,54 +84,22 @@ func (w *WAL) Load(ctx context.Context) ([]command.Command, error) {
 	return commands, nil
 }
 
-func (w *WAL) AfterSegments(id int64) ([]byte, error) {
-	slog.Debug("AfterSegments", slog.Int64("id", id))
-
-	segments := make([]Segment, 0, 10)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	for sID, segment := range w.segments {
-		if sID > ID(id) {
-			segments = append(segments, segment)
-		}
-	}
-
-	data, err := encodeSegments(segments)
-	if err != nil {
-		return nil, fmt.Errorf("encode segments: %w", err)
-	}
-
-	return data, nil
-}
-
-func (w *WAL) ApplySegments(data []byte) ([]command.Command, error) {
-	segments, err := decodeSegments(data)
-	if err != nil {
-		return nil, fmt.Errorf("decode segments: %w", err)
-	}
-
-	commands := []command.Command{}
-	for _, s := range segments {
-		w.addSegment(s)
-		commands = append(commands, s.commands...)
-	}
-
-	if len(data) > 0 {
-		_, err = w.store.Write(data)
-		if err != nil {
-			return nil, fmt.Errorf("write: %w", err)
-		}
-	}
-
-	return commands, nil
-}
-
-func (w *WAL) LastSegmentID() int64 {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return int64(w.maxID)
-}
-
 func (w *WAL) Close() {
 	w.batch.Close()
+}
+
+func decodeSegments(data []byte) ([]Segment, error) {
+	buf := bytes.NewBuffer(data)
+
+	segments := make([]Segment, 0, 100)
+	for {
+		segment, err := DecodeSegment(buf)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return segments, nil
+			}
+			return nil, fmt.Errorf("decode cmd: %w", err)
+		}
+		segments = append(segments, segment)
+	}
 }
