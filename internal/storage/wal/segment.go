@@ -2,7 +2,6 @@ package wal
 
 import (
 	"log/slog"
-	"sync"
 
 	"inmem-db/internal/domain/command"
 )
@@ -10,8 +9,6 @@ import (
 type ID int64
 
 type Segment struct {
-	mu *sync.RWMutex
-
 	ID       ID
 	commands []command.Command
 }
@@ -21,7 +18,6 @@ func newSegment(id ID, commands []command.Command) Segment {
 	copy(segmentCommands, commands)
 
 	return Segment{
-		mu:       &sync.RWMutex{},
 		ID:       id,
 		commands: segmentCommands,
 	}
@@ -34,9 +30,6 @@ func (w *WAL) makeSegment(commands []command.Command) Segment {
 func (w *WAL) addSegment(s Segment) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	w.segments[s.ID] = s
 
@@ -69,9 +62,7 @@ func (w *WAL) SegmentsAfter(id int64) []Segment {
 	return segments
 }
 
-func (w *WAL) SegmentCommands(segment Segment) []command.Command {
-	segment.mu.RLock()
-	defer segment.mu.RUnlock()
+func SegmentCommands(segment Segment) []command.Command {
 	commands := append([]command.Command{}, segment.commands...)
 	return commands
 }

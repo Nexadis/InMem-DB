@@ -3,7 +3,6 @@ package wal
 import (
 	"fmt"
 	"io"
-	"sync"
 
 	"inmem-db/internal/domain/command"
 	"inmem-db/internal/storage/wal/decode"
@@ -11,9 +10,6 @@ import (
 )
 
 func EncodeSegment(w io.Writer, segment Segment) error {
-	segment.mu.RLock()
-	defer segment.mu.RUnlock()
-
 	err := encode.WriteID(w, int64(segment.ID))
 	if err != nil {
 		return fmt.Errorf("encode segment id: %w", err)
@@ -45,7 +41,6 @@ func DecodeSegment(r io.Reader) (Segment, error) {
 		return Segment{}, fmt.Errorf("decode segment size: %w", err)
 	}
 	segment := Segment{
-		mu:       &sync.RWMutex{},
 		ID:       ID(id),
 		commands: make([]command.Command, size),
 	}

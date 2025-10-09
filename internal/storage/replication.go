@@ -33,7 +33,6 @@ type replicationClient struct {
 
 type segmentManager interface {
 	LastSegmentID() int64
-	SegmentCommands(segment wal.Segment) []command.Command
 	SaveSegment(segment wal.Segment) error
 }
 
@@ -153,7 +152,7 @@ func (r *replicationClient) applySegments(ctx context.Context, segments []wal.Se
 		if err != nil {
 			return fmt.Errorf("save segment: %w", err)
 		}
-		cmds := r.wal.SegmentCommands(s)
+		cmds := wal.SegmentCommands(s)
 		err = doCommands(ctx, r.e, cmds)
 		if err != nil {
 			return fmt.Errorf("do segment commands: %w", err)
