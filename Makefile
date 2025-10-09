@@ -8,9 +8,15 @@ build:
 test:
 	go test -race -v -count=1 -cover ./...
 
-run-server:
-	CONFIG_FILE="configs/local.yaml" go run ./cmd/server/main.go
+run-master:
+	CONFIG_FILE="configs/master.yaml" go run ./cmd/server/main.go
+
+run-slave:
+	CONFIG_FILE="configs/slave.yaml" go run ./cmd/server/main.go
 
 run-client:
 	go run ./cmd/client/main.go
+
+run-client-slave:
+	go run ./cmd/client/main.go -address localhost:3224
 

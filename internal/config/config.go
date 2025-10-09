@@ -11,10 +11,11 @@ import (
 const configENV = "CONFIG_FILE"
 
 type Server struct {
-	Engine  Engine  `mapstructure:"engine"`
-	Network Network `mapstructure:"network"`
-	Logging Logging `mapstructure:"logging"`
-	Wal     *WAL    `mapstructure:"wal"`
+	Engine      Engine       `mapstructure:"engine"`
+	Network     Network      `mapstructure:"network"`
+	Logging     Logging      `mapstructure:"logging"`
+	Wal         *WAL         `mapstructure:"wal"`
+	Replication *Replication `mapstructure:"replication"`
 }
 
 type EngineType string
@@ -47,6 +48,19 @@ type WAL struct {
 
 	MaxSegmentSize string `mapstructure:"max_segment_size"`
 	DataDir        string `mapstructure:"data_directory"`
+}
+
+type replicationType string
+
+const (
+	MasterReplica = "master"
+	SlaveReplica  = "slave"
+)
+
+type Replication struct {
+	ReplicaType   replicationType `mapstructure:"replica_type"`
+	MasterAddress string          `mapstructure:"master_address"`
+	SyncInterval  time.Duration   `mapstructure:"sync_interval"`
 }
 
 const (

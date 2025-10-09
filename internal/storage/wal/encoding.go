@@ -1,39 +1,57 @@
 package wal
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"io"
 
 	"inmem-db/internal/domain/command"
+	"inmem-db/internal/storage/wal/decode"
 	"inmem-db/internal/storage/wal/encode"
 )
 
-func decodeCommands(data []byte) ([]command.Command, error) {
-	buf := bytes.NewBuffer(data)
-
-	cmds := make([]command.Command, 0, 100)
-	for {
-		cmd, err := encode.Read(buf)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return cmds, nil
-			}
-			return nil, fmt.Errorf("decode cmd: %w", err)
-		}
-		cmds = append(cmds, cmd)
+func EncodeSegment(w io.Writer, segment Segment) error {
+	err := encode.WriteID(w, int64(segment.ID))
+	if err != nil {
+		return fmt.Errorf("encode segment id: %w", err)
 	}
+
+	err = encode.WriteSize(w, uint32(len(segment.commands)))
+	if err != nil {
+		return fmt.Errorf("encode segment size: %w", err)
+	}
+
+	for _, cmd := range segment.commands {
+		err := encode.Write(w, cmd)
+		if err != nil {
+			return fmt.Errorf("encode command of segment '%d': %w", segment.ID, err)
+		}
+	}
+
+	return nil
 }
 
-func encodeCommands(commands []command.Command) ([]byte, error) {
-	buf := &bytes.Buffer{}
-	for _, cmd := range commands {
-		err := encode.Write(buf, cmd)
-		if err != nil {
-			return nil, fmt.Errorf("encode cmd: %w", err)
-		}
+func DecodeSegment(r io.Reader) (Segment, error) {
+	id, err := decode.ReadID(r)
+	if err != nil {
+		return Segment{}, fmt.Errorf("decode segment id: %w", err)
 	}
 
-	return buf.Bytes(), nil
+	size, err := decode.ReadSize(r)
+	if err != nil {
+		return Segment{}, fmt.Errorf("decode segment size: %w", err)
+	}
+	segment := Segment{
+		ID:       ID(id),
+		commands: make([]command.Command, size),
+	}
+
+	for i := range size {
+		cmd, err := decode.Read(r)
+		if err != nil {
+			return Segment{}, fmt.Errorf("decode command of segment '%d': %w", segment.ID, err)
+		}
+		segment.commands[i] = cmd
+	}
+
+	return segment, nil
 }

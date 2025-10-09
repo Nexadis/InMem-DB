@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"time"
 
 	"inmem-db/internal/config"
 
@@ -25,6 +26,12 @@ type Starter interface {
 	Start(ctx context.Context) error
 }
 
+var DefaultConfig = config.Network{
+	MaxMsgSize:     "4KB",
+	IdleTimeout:    time.Second * 3,
+	MaxConnections: 100,
+}
+
 func NewServer(cfg config.Network, newHandler HandlerFactory) *Server {
 	return &Server{
 		cfg:        cfg,
@@ -38,14 +45,19 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 	defer l.Close()
+	slog.InfoContext(ctx, "start server", slog.String("addr", s.cfg.Address))
+
+	grp, ctx := errgroup.WithContext(ctx)
+	grp.SetLimit(s.cfg.MaxConnections)
 
 	go func() {
 		<-ctx.Done()
 		l.Close()
+		err := grp.Wait()
+		if err != nil {
+			slog.Error("tcp group wait", slog.String("error", err.Error()))
+		}
 	}()
-
-	grp, ctx := errgroup.WithContext(ctx)
-	grp.SetLimit(s.cfg.MaxConnections)
 
 	for {
 		conn, err := l.Accept()
@@ -61,7 +73,7 @@ func (s *Server) Start(ctx context.Context) error {
 		grp.Go(func() error {
 			defer func() {
 				if err := recover(); err != nil {
-					slog.ErrorContext(ctx, "recover", slog.Any("panic", err))
+					slog.ErrorContext(ctx, "recover tcp handler", slog.Any("panic", err))
 				}
 			}()
 
@@ -76,7 +88,10 @@ func (s *Server) newConn(ctx context.Context, conn net.Conn) error {
 }
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
-	defer conn.Close()
+	defer func() {
+		slog.InfoContext(ctx, "close connection", slog.String("addr", conn.RemoteAddr().String()))
+		conn.Close()
+	}()
 
 	idled := withIdle(conn, s.cfg.IdleTimeout)
 
