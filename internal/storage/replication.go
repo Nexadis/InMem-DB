@@ -96,28 +96,58 @@ func (r *replicationClient) Start(ctx context.Context) error {
 func (r *replicationClient) sync(ctx context.Context) error {
 	slog.DebugContext(ctx, "sync master")
 
-	lastID := r.wal.LastSegmentID()
-	err := encode.WriteID(r.send, lastID)
+	segments, err := r.loadNewSegments(ctx)
 	if err != nil {
-		return fmt.Errorf("write segment id: %w", err)
+		return fmt.Errorf("load new segments: %w", err)
 	}
 
-	size, err := decode.ReadSize(r.recv)
-	if err != nil {
-		return fmt.Errorf("read segments size : %w", err)
-	}
-
-	if size == 0 {
-		slog.Debug("nothing to sync")
+	if len(segments) == 0 {
 		return nil
 	}
 
-	segments := make([]wal.Segment, size)
-	err = decodeSegments(r.recv, segments)
+	slog.DebugContext(ctx, "got new segments", slog.Int("length", len(segments)))
+
+	err = r.applySegments(ctx, segments)
 	if err != nil {
-		return fmt.Errorf("read segments: %w", err)
+		return fmt.Errorf("apply segments: %w", err)
 	}
 
+	return nil
+}
+
+func (r *replicationClient) countNewSegments(_ context.Context) (uint32, error) {
+	lastID := r.wal.LastSegmentID()
+	err := encode.WriteID(r.send, lastID)
+	if err != nil {
+		return 0, fmt.Errorf("write segment id: %w", err)
+	}
+
+	count, err := decode.ReadSize(r.recv)
+	if err != nil {
+		return 0, fmt.Errorf("read segments size : %w", err)
+	}
+	return count, nil
+}
+
+func (r *replicationClient) loadNewSegments(ctx context.Context) ([]wal.Segment, error) {
+	count, err := r.countNewSegments(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("count new segments: %w", err)
+	}
+
+	if count == 0 {
+		return []wal.Segment{}, nil
+	}
+
+	segments := make([]wal.Segment, count)
+	err = decodeSegments(r.recv, segments)
+	if err != nil {
+		return nil, err
+	}
+	return segments, nil
+}
+
+func (r *replicationClient) applySegments(ctx context.Context, segments []wal.Segment) error {
 	for _, s := range segments {
 		err := r.wal.SaveSegment(s)
 		if err != nil {
@@ -128,18 +158,6 @@ func (r *replicationClient) sync(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("do segment commands: %w", err)
 		}
-	}
-
-	return nil
-}
-
-func decodeSegments(r io.Reader, segments []wal.Segment) error {
-	for i := range len(segments) {
-		segment, err := wal.DecodeSegment(r)
-		if err != nil {
-			return fmt.Errorf("decode segment: %w", err)
-		}
-		segments[i] = segment
 	}
 	return nil
 }
