@@ -1,9 +1,13 @@
 package wal
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"sync"
 
 	"inmem-db/internal/config"
 	"inmem-db/internal/domain/command"
@@ -13,6 +17,10 @@ import (
 
 type WAL struct {
 	cfg config.WAL
+
+	mu       sync.RWMutex
+	segments map[ID]Segment
+	maxID    ID
 
 	store *fstore.FStore
 	batch *concurrent.Batch[command.Command]
@@ -25,8 +33,9 @@ func New(cfg config.WAL) (*WAL, error) {
 	}
 
 	w := WAL{
-		cfg:   cfg,
-		store: store,
+		cfg:      cfg,
+		store:    store,
+		segments: make(map[ID]Segment, 10),
 	}
 	w.batch = concurrent.NewBatch(
 		int(cfg.BatchSize),
@@ -42,13 +51,14 @@ func (w *WAL) Save(ctx context.Context, cmd command.Command) error {
 }
 
 func (w *WAL) writeBatch(batch []command.Command) error {
-	data, err := encodeCommands(batch)
-	if err != nil {
-		return fmt.Errorf("encode: %w", err)
+	if len(batch) == 0 {
+		return nil
 	}
-	_, err = w.store.Write(data)
+
+	segment := w.makeSegment(batch)
+	err := w.SaveSegment(segment)
 	if err != nil {
-		return fmt.Errorf("write: %w", err)
+		return fmt.Errorf("save segment: %w", err)
 	}
 	return nil
 }
@@ -59,15 +69,37 @@ func (w *WAL) Load(ctx context.Context) ([]command.Command, error) {
 		return nil, fmt.Errorf("load files: %w", err)
 	}
 
-	cmds, err := decodeCommands(data)
+	segments, err := decodeSegments(data)
 	if err != nil {
-		return nil, fmt.Errorf("decode commands: %w", err)
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+
+	commands := make([]command.Command, 0, len(segments)*10)
+	for _, segment := range segments {
+		commands = append(commands, segment.commands...)
+		w.addSegment(segment)
 	}
 
 	slog.Debug("wal loaded")
-	return cmds, nil
+	return commands, nil
 }
 
 func (w *WAL) Close() {
 	w.batch.Close()
+}
+
+func decodeSegments(data []byte) ([]Segment, error) {
+	buf := bytes.NewBuffer(data)
+
+	segments := make([]Segment, 0, 100)
+	for {
+		segment, err := DecodeSegment(buf)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return segments, nil
+			}
+			return nil, fmt.Errorf("decode cmd: %w", err)
+		}
+		segments = append(segments, segment)
+	}
 }

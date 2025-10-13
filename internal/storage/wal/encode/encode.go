@@ -13,6 +13,14 @@ var CmdType2Byte = map[string]byte{
 	string(command.CommandDEL): 3,
 }
 
+func WriteID(w io.Writer, id int64) error {
+	return binary.Write(w, binary.BigEndian, id)
+}
+
+func WriteSize(w io.Writer, size uint32) error {
+	return binary.Write(w, binary.BigEndian, size)
+}
+
 func Write(w io.Writer, cmd command.Command) error {
 	if cmd.Type == command.CommandGET {
 		return nil
